@@ -4,6 +4,7 @@ import whisper
 import argparse
 import warnings
 import tempfile
+from whisper.tokenizer import LANGUAGES
 from .utils import filename, str2bool, write_srt
 
 
@@ -18,12 +19,14 @@ def main():
                         default=".", help="directory to save the outputs")
     parser.add_argument("--output_srt", type=str2bool, default=False,
                         help="whether to output the .srt file along with the video files")
-    parser.add_argument("--srt_only", type=str2bool, default=False,
+    parser.add_argument("--srt_only", type=str2bool, default=True,
                         help="only generate the .srt file and not create overlayed video")
     parser.add_argument("--verbose", type=str2bool, default=False,
                         help="whether to print out the progress and debug messages")
+    parser.add_argument("--language", type=str,
+                        help=f"force the use of a chosen language: {list(LANGUAGES.keys())} {list(LANGUAGES.values())})")
 
-    parser.add_argument("--task", type=str, default="transcribe", choices=[
+    parser.add_argument("--task", type=str, default="translate", choices=[
                         "transcribe", "translate"], help="whether to perform X->X speech recognition ('transcribe') or X->English translation ('translate')")
 
     args = parser.parse_args().__dict__
@@ -31,7 +34,17 @@ def main():
     output_dir: str = args.pop("output_dir")
     output_srt: bool = args.pop("output_srt")
     srt_only: bool = args.pop("srt_only")
+    language: str = args.pop("language")
     os.makedirs(output_dir, exist_ok=True)
+
+    if language is not None:
+        if language not in LANGUAGES:
+            raise Exception(
+                f'whisper: error: argument --language: invalid choice: {language} (choose from {list(LANGUAGES.keys())}) {list(LANGUAGES.values())}')
+        else:
+            warnings.warn(
+                f"You have forced the use of the {language} language.")
+            args["language"] = language
 
     if model_name.endswith(".en"):
         warnings.warn(
@@ -41,11 +54,15 @@ def main():
     model = whisper.load_model(model_name)
     audios = get_audio(args.pop("video"))
     subtitles = get_subtitles(
-        audios, output_srt or srt_only, output_dir, lambda audio_path: model.transcribe(audio_path, **args)
+        audios, output_srt or srt_only, output_dir, lambda audio_path: model.transcribe(
+            audio_path, **args)
     )
 
     if srt_only:
         return
+
+    # bash command to download a youtube video with `youtube-dl` and save it as `video.mp4`:
+    # youtube-dl -f 22 -o video.mp4 https://www.youtube.com/watch?v=QH2-TGUlwu4
 
     for path, srt_path in subtitles.items():
         out_path = os.path.join(output_dir, f"{filename(path)}.mp4")
@@ -55,7 +72,7 @@ def main():
         video = ffmpeg.input(path)
         audio = video.audio
 
-        ffmpeg.concat(
+        stderr = ffmpeg.concat(
             video.filter('subtitles', srt_path, force_style="OutlineColour=&H40000000,BorderStyle=3"), audio, v=1, a=1
         ).output(out_path).run(quiet=True, overwrite_output=True)
 
@@ -82,12 +99,12 @@ def get_audio(paths):
 
 
 def get_subtitles(audio_paths: list, output_srt: bool, output_dir: str, transcribe: callable):
+    srt_path = output_dir if output_srt else tempfile.gettempdir()
     subtitles_path = {}
 
     for path, audio_path in audio_paths.items():
-        srt_path = output_dir if output_srt else tempfile.gettempdir()
         srt_path = os.path.join(srt_path, f"{filename(path)}.srt")
-        
+
         print(
             f"Generating subtitles for {filename(path)}... This might take a while."
         )
